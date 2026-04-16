@@ -1,25 +1,41 @@
+// The Listening Tree
 let rootBranch;
+
+// This is the starting position for the tree
 let startx, starty;
 
-let bgLayer;
+// ground and tree visuals
 let groundLayer;
 let treeFrames = [];
 let groundPetals = [];
 let fallingLeaves = [];
 
+// start screen with instructions
+let started = false;
+let startScale = 0.9;
+
 let bgImage;
 
+// audio analyser
 let fft;
-let waveform = [];
+let spectrum = [];
+
+// timed text settings 
+let textSequenceInterval = 60000;
+let phraseDuration = 2600;
+let phraseGap = 350;
+let textFadeTime = 500;
 
 let petalColors = [
   [157, 40, 73],
   [251, 180, 210]
 ];
 
+// tree depth and cached frame count. The cache of the tree grwoth is created on page load
 let maxDepth = 12;
 let cachedFrameCount = 28;
 
+// Here is the growth
 let voiceOn = false;
 let growth = 0.12;
 let targetGrowth = 0.12;
@@ -30,17 +46,23 @@ let micReady = false;
 let micLevel = 0;
 let micThreshold = 0.03;
 
+function preload() {
+  bgImage = loadImage("bg.png");
+}
+
+// setup
 function setup() {
   createCanvas(windowWidth, windowHeight);
   pixelDensity(1);
 
+  // Position of tree
   startx = width / 2;
   starty = height - 100;
 
-  makeBackground();
   makeGroundPetals();
   buildGroundLayer();
 
+  // Creates tree structure
   randomSeed(1000);
   noiseSeed(1000);
   rootBranch = new Branch(startx, starty, 100, 20, 0, TWO_PI * (3 / 4));
@@ -48,37 +70,25 @@ function setup() {
   buildTreeFrames();
 }
 
-function preload() {
-  bgImage = loadImage("bg.png");
-}
-
-function makeBackground() {
-  bgLayer = createGraphics(width, height);
-  bgLayer.pixelDensity(1);
-
-  bgLayer.background(245, 239, 244);
-  bgLayer.noStroke();
-
-  for (let i = 0; i < width; i += 6) {
-    for (let j = 0; j < height; j += 6) {
-      bgLayer.fill(
-        random(236, 248),
-        random(230, 240),
-        random(236, 246),
-        55
-      );
-      bgLayer.rect(i, j, 6, 6);
-    }
-  }
-}
 function draw() {
-  image(bgImage, 0, 0, width, height);
+  if (!started) {
+    drawStartScreen();
+    return;
+  }
+
+  background(245, 239, 244);
+
+  if (bgImage) {
+    image(bgImage, 0, 0, width, height);
+  }
+
   image(groundLayer, 0, 0);
 
+  // keepsn the previous voice state for detecting transitions
   prevVoiceOn = voiceOn;
 
+  //Spacebar also acts as backup tree groiwth control
   let keyboardVoice = keyIsDown(32);
-
   if (micReady) {
     let raw = mic.getLevel();
     micLevel = lerp(micLevel, raw, 0.2);
@@ -87,21 +97,27 @@ function draw() {
     voiceOn = keyboardVoice;
   }
 
+  // Grows when voice is on, decays when theres no noise
   targetGrowth = voiceOn ? 1 : 0;
-
   growth = lerp(growth, targetGrowth, voiceOn ? 0.03 : 0.006);
   growth = constrain(growth, 0, 1);
 
+  //audio spectrum data for moon visualisation
   if (micReady && fft) {
-  waveform = fft.waveform();
-}
+    spectrum = fft.analyze();
+  } else {
+    spectrum = [];
+  }
 
   let idx = floor(map(growth, 0, 1, 0, cachedFrameCount - 1));
   idx = constrain(idx, 0, cachedFrameCount - 1);
-  image(treeFrames[idx], 0, 0);
 
+  if (treeFrames[idx]) {
+    image(treeFrames[idx], 0, 0);
+  }
+
+  // add falling leaves when tree decays
   spawnFallingLeaves();
-
   for (let i = fallingLeaves.length - 1; i >= 0; i--) {
     fallingLeaves[i].applyForce(createVector(0, 0.005));
     fallingLeaves[i].applyForce(createVector(0.00035, 0));
@@ -113,9 +129,111 @@ function draw() {
     }
   }
 
-  drawHint();
+  // clears the fallen leaves once the tree is bare
+  if (!treeHasLeavesLeft() && !voiceOn && fallingLeaves.length > 0) {
+    let allLow = true;
+
+    for (let i = 0; i < fallingLeaves.length; i++) {
+      if (fallingLeaves[i].pos.y < height - 20) {
+        allLow = false;
+        break;
+      }
+    }
+
+    if (allLow) {
+      fallingLeaves = [];
+    }
+  }
+
+  // draws the moon visualizer and the timed phrases
+  drawMoonWaveform();
+  drawTimedPhrases();
 }
 
+//start screen shown before interaction
+function drawStartScreen() {
+  background(0);
+  startScale = lerp(startScale, 1, 0.03);
+
+  push();
+  translate(width / 2, height / 2);
+  scale(startScale);
+
+  textAlign(CENTER, CENTER);
+  textStyle(BOLD);
+  noStroke();
+
+  textSize(110);
+  fill(0, 100);
+  text("PRESS SPACE", 4, 4);
+
+  fill(255);
+  text("PRESS SPACE", 0, 0);
+  textSize(30);
+  fill(255, 160);
+  text("let it hear you", 0, 90);
+
+  pop();
+}
+
+function treeHasLeavesLeft() {
+  return growth > 0.03;
+}
+
+function drawTimedPhrases() {
+  let cycle = millis() % textSequenceInterval;
+
+  let firstStart = 0;
+  let firstEnd = firstStart + phraseDuration;
+
+  let secondStart = firstEnd + phraseGap;
+  let secondEnd = secondStart + phraseDuration;
+
+  let phrase = null;
+  let phraseTime = 0;
+
+  if (cycle >= firstStart && cycle < firstEnd) {
+    phrase = "SPEAKING\nGROWS";
+    phraseTime = cycle - firstStart;
+  } else if (cycle >= secondStart && cycle < secondEnd) {
+    phrase = "SILENCE\nKILLS";
+    phraseTime = cycle - secondStart;
+  } else {
+    return;
+  }
+
+  // Fades the text in and out
+  let alpha = 255;
+
+  if (phraseTime < textFadeTime) {
+    alpha = map(phraseTime, 0, textFadeTime, 0, 255);
+  } else if (phraseTime > phraseDuration - textFadeTime) {
+    alpha = map(phraseTime, phraseDuration - textFadeTime, phraseDuration, 255, 0);
+  }
+
+  // Slight scale expansion while phrase is on screen
+  let expandProgress = constrain(phraseTime / phraseDuration, 0, 1);
+  let scaleAmt = lerp(0.9, 1.08, expandProgress);
+
+  push();
+  translate(width / 2, height / 2 + 10);
+  scale(scaleAmt);
+
+  textAlign(CENTER, CENTER);
+  textStyle(BOLD);
+  noStroke();
+
+  textSize(150);
+  fill(170, 255, 255, alpha * 0.18);
+  text(phrase, 3, 3);
+
+  fill(245, 245, 245, alpha);
+  text(phrase, 0, 0);
+
+  pop();
+}
+
+// start microphone and FFT analysis
 function startMic() {
   if (micReady) return;
 
@@ -125,31 +243,13 @@ function startMic() {
   mic.start(
     () => {
       micReady = true;
-      fft = new p5.FFT(0.8, 256);
+      fft = new p5.FFT(0.9, 256);
       fft.setInput(mic);
     },
     (err) => {
       console.error("Mic start failed:", err);
     }
   );
-}
-
-function mousePressed() {
-  startMic();
-}
-
-function makeBackground() {
-  bgLayer = createGraphics(width, height);
-  bgLayer.pixelDensity(1);
-  bgLayer.background(220);
-  bgLayer.noStroke();
-
-  for (let i = 0; i < width; i += 2) {
-    for (let j = 0; j < height; j += 2) {
-      bgLayer.fill(random(210, 235), 150);
-      bgLayer.rect(i, j, 5, 5);
-    }
-  }
 }
 
 function makeGroundPetals() {
@@ -177,6 +277,7 @@ function buildGroundLayer() {
   }
 }
 
+// pre render tree frames for different growth states
 function buildTreeFrames() {
   treeFrames = [];
 
@@ -199,7 +300,6 @@ function drawCanopyOverlay(pg, g) {
   pg.noStroke();
 
   let topCount = floor(lerp(0, 340, g));
-  let bottomCount = 0;
 
   randomSeed(5000);
 
@@ -220,22 +320,13 @@ function drawCanopyOverlay(pg, g) {
     }
   }
 
-  for (let i = 0; i < bottomCount; i++) {
-  let c = random() < 0.82 ? petalColors[1] : petalColors[0];
-  pg.fill(c[0], c[1], c[2], 85);
-
-  let x = random(-260, 260);
-  let y = random(-250, -120);
-
-  if ((x * x) / (260 * 260) + ((y + 185) * (y + 185)) / (70 * 70) < 1.0) {
-    pg.ellipse(x, y, random(7, 11), random(4, 7));
-  }
-}
-
   pg.pop();
 }
 
+// spawns falling leaves when the tree starts decaying
 function spawnFallingLeaves() {
+  if (!treeHasLeavesLeft()) return;
+
   if (!voiceOn && prevVoiceOn !== voiceOn) {
     for (let i = 0; i < 70; i++) {
       fallingLeaves.push(
@@ -266,77 +357,57 @@ function spawnFallingLeaves() {
   }
 }
 
-function drawHint() {
-  let panelX = 20;
-  let panelY = 20;
-  let panelW = 330;
-  let panelH = 110;
+// draws the circular moon audio visualiser
+function drawMoonWaveform() {
+  let cx = width - 220;
+  let cy = 180;
 
+  let moonR = 100;
+  let minBar = 16;
+  let maxBar = 45;
+  let count = 128;
+
+  push();
+  translate(cx, cy);
+
+  // sligh glow behind moon
   noStroke();
-  fill(30, 30, 30, 95);
-  rect(panelX, panelY, panelW, panelH, 12);
+  fill(245, 245, 245, 18);
+  ellipse(0, 0, (moonR + maxBar + 10) * 2);
 
-  stroke(255, 255, 255, 30);
-  noFill();
-  rect(panelX, panelY, panelW, panelH, 12);
+  fill(245, 245, 245, 180);
+  ellipse(0, 0, moonR * 2);
 
-  noStroke();
-  fill(255);
-  textSize(16);
-  text("Speak to grow, silence to decay", panelX + 14, panelY + 24);
+  // audio bars
+  stroke(255, 245, 245, 235);
+  strokeWeight(2);
+  strokeCap(ROUND);
 
-  textSize(11);
-  fill(255, 210);
-  textAlign(RIGHT, CENTER);
-  text(voiceOn ? "LISTENING" : "QUIET", panelX + panelW - 14, panelY + 16);
-  textAlign(LEFT, BASELINE);
+  for (let i = 0; i < count; i++) {
+    let angle = map(i, 0, count, -HALF_PI, TWO_PI - HALF_PI);
 
-  fill(255, 210);
-  textSize(12);
-  text("Mic level: " + nf(micLevel, 1, 3), panelX + 14, panelY + 44);
+    let barLen = minBar;
 
-  let waveX = panelX + 14;
-  let waveY = panelY + 68;
-  let waveW = panelW - 28;
-  let waveH = 24;
+    if (micReady && spectrum.length > 0) {
+      let specIndex = floor(map(i, 0, count - 1, 0, spectrum.length * 0.45));
+      specIndex = constrain(specIndex, 0, spectrum.length - 1);
 
-  noFill();
-  stroke(255, 35);
-  rect(waveX, waveY - waveH / 2, waveW, waveH, 6);
-
-  if (micReady && waveform.length > 0) {
-    noFill();
-    stroke(255, 194, 245);
-    strokeWeight(1.5);
-    beginShape();
-    for (let i = 0; i < waveform.length; i++) {
-      let x = map(i, 0, waveform.length - 1, waveX + 4, waveX + waveW - 4);
-      let y = map(waveform[i], -1, 1, waveY + waveH / 2 - 3, waveY - waveH / 2 + 3);
-      vertex(x, y);
+      let energy = spectrum[specIndex] / 255.0;
+      barLen = minBar + energy * maxBar;
     }
-    endShape();
-  } else {
-    stroke(255, 90);
-    line(waveX + 4, waveY, waveX + waveW - 4, waveY);
+
+    let x1 = cos(angle) * moonR;
+    let y1 = sin(angle) * moonR;
+    let x2 = cos(angle) * (moonR + barLen);
+    let y2 = sin(angle) * (moonR + barLen);
+
+    line(x1, y1, x2, y2);
   }
 
-  let barX = panelX + 14;
-  let barY = panelY + 92;
-  let barW = panelW - 28;
-  let barH = 8;
-
-  noStroke();
-  fill(255, 35);
-  rect(barX, barY, barW, barH, 10);
-
-  fill(255, 194, 245, 220);
-  rect(barX, barY, barW * growth, barH, 10);
-
-  let thresholdX = map(micThreshold, 0, 0.1, barX, barX + barW);
-  stroke(255, 120);
-  line(thresholdX, barY - 3, thresholdX, barY + barH + 3);
+  pop();
 }
 
+// branch class for recursive tree drawing
 class Branch {
   constructor(x, y, len, thickness, depth, dir) {
     this.x = x;
@@ -365,6 +436,7 @@ class Branch {
     }
   }
 
+  // builds the branch shape using noise
   buildPoints() {
     for (let i = 0; i < this.len; i++) {
       this.points.push(createVector(i, noise(this.depth * 100 + i * 0.05) * 5));
@@ -384,6 +456,7 @@ class Branch {
     }
   }
 
+  // makes blossoms at the ends of branches
   makeTipBlossoms() {
     let isLight = random(1) < 0.9;
 
@@ -416,6 +489,7 @@ class Branch {
     }
   }
 
+  // creates child branches recursively
   makeChildren() {
     let ang;
     if (this.depth > 0) {
@@ -456,7 +530,7 @@ class Branch {
       if (growthAmount < b.appearAt) continue;
       let alpha = map(growthAmount, b.appearAt, 1, 0, 160);
       alpha = constrain(alpha, 0, 160);
-      pg.stroke(233,76,137, alpha);
+      pg.stroke(233, 76, 137, alpha);
       pg.strokeWeight(2);
       pg.line(b.x1, b.y1, b.x2, b.y2);
     }
@@ -468,10 +542,13 @@ class Branch {
         if (b.type === "line") {
           let alpha = map(growthAmount, b.appearAt, 1, 0, b.light ? 210 : 190);
           alpha = constrain(alpha, 0, b.light ? 210 : 190);
+
           if (b.light) {
-          pg.stroke(157, 40, 73, alpha);
-          pg.stroke(251, 180, 210, alpha);
+            pg.stroke(251, 180, 210, alpha);
+          } else {
+            pg.stroke(157, 40, 73, alpha);
           }
+
           pg.strokeWeight(2);
           pg.line(b.x1, b.y1, b.x2, b.y2);
         } else {
@@ -549,6 +626,7 @@ class Leaf {
     }
   }
 
+  // Draws leaves
   display() {
     push();
     translate(this.pos.x, this.pos.y);
@@ -560,24 +638,30 @@ class Leaf {
   }
 }
 
+// starts interactive piece on first space press
 function keyPressed() {
   if (key === ' ') {
-    voiceOn = true;
-    startMic();
-  }
-
-  if (key === 'r' || key === 'R') {
-    fallingLeaves = [];
-    buildTreeFrames();
-  }
-
-  if (key === 's' || key === 'S') {
-    save('tree_voice_growth.png');
+    if (!started) {
+      started = true;
+      startMic();
+      return;
+    }
   }
 }
 
-function keyReleased() {
-  if (key === ' ') {
-    voiceOn = false;
-  }
+// rebuilds th visuals if window size changes
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+
+  startx = width / 2;
+  starty = height - 100;
+
+  makeGroundPetals();
+  buildGroundLayer();
+
+  randomSeed(1000);
+  noiseSeed(1000);
+  rootBranch = new Branch(startx, starty, 100, 20, 0, TWO_PI * (3 / 4));
+
+  buildTreeFrames();
 }
